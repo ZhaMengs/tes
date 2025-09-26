@@ -1,0 +1,211 @@
+name: RDP with Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl wget net-tools iproute2
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          echo "Starting tailscaled..."
+          sudo tailscaled --state=mem: --tun=userspace-networking > /tmp/tailscaled.log 2>&1 &
+          echo $! > /tmp/tailscaled.pid
+
+      - name: Wait and Check Tailscale Service
+        run: |
+          # Wait for tailscaled to start properly
+          echo "Waiting for tailscaled to start..."
+          sleep 10
+          
+          # Check if tailscaled process is running
+          if ps -p $(cat /tmp/tailscaled.pid) > /dev/null 2>&1; then
+            echo "✓ tailscaled is running with PID $(cat /tmp/tailscaled.pid)"
+          else
+            echo "✗ tailscaled failed to start"
+            echo "=== Tailscaled log ==="
+            cat /tmp/tailscaled.log || true
+            exit 1
+          fi
+          
+          # Check tailscale status
+          echo "Checking tailscale status..."
+          sudo tailscale status || echo "Tailscale status check failed, continuing..."
+
+      - name: Authenticate Tailscale
+        run: |
+          HOSTNAME="zhameng-$(date +%s)"
+          echo "HOSTNAME=$HOSTNAME" >> $GITHUB_ENV
+          
+          echo "Authenticating with Tailscale..."
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES"
+            
+            if sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$HOSTNAME --accept-routes; then
+              echo "✓ Tailscale authentication successful"
+              break
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "✗ Authentication failed, retrying in 5 seconds..."
+              sleep 5
+            fi
+          done
+          
+          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+            echo "❌ All authentication attempts failed"
+            exit 1
+          fi
+          
+          # Verify network interface
+          echo "Checking network interfaces..."
+          ip addr show tailscale0 || ip addr show | grep -i tailscale
+
+      - name: Get Tailscale IP
+        id: tailscale-ip
+        run: |
+          echo "Getting Tailscale IP address..."
+          sleep 5
+          
+          TAILSCALE_IP=$(sudo tailscale ip -4)
+          if [ -z "$TAILSCALE_IP" ]; then
+            echo "Trying alternative method to get IP..."
+            TAILSCALE_IP=$(ip addr show tailscale0 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "unknown")
+          fi
+          
+          echo "IP: $TAILSCALE_IP"
+          echo "ip=$TAILSCALE_IP" >> $GITHUB_OUTPUT
+
+      - name: Setup RDP User
+        run: |
+          USERNAME="zhameng"
+          PASSWORD="Fardan123@"
+          
+          echo "Setting up RDP user..."
+          
+          # Check if user exists
+          if id "$USERNAME" &>/dev/null; then
+            echo "User $USERNAME already exists, updating password..."
+            echo "$USERNAME:$PASSWORD" | sudo chpasswd
+          else
+            echo "Creating new user $USERNAME..."
+            sudo useradd -m -s /bin/bash $USERNAME
+            echo "$USERNAME:$PASSWORD" | sudo chpasswd
+            sudo usermod -aG sudo $USERNAME
+          fi
+          
+          # Create X session configuration
+          sudo mkdir -p /home/$USERNAME/.config
+          echo "xfce4-session" | sudo tee /home/$USERNAME/.xsession
+          sudo chown -R $USERNAME:$USERNAME /home/$USERNAME
+          sudo chmod +x /home/$USERNAME/.xsession
+
+      - name: Install XRDP and Desktop Environment
+        run: |
+          echo "Installing XRDP and desktop environment..."
+          
+          # Set DEBIAN_FRONTEND to avoid interactive prompts
+          export DEBIAN_FRONTEND=noninteractive
+          
+          # Install packages
+          sudo apt-get install -y \
+            xrdp \
+            xfce4 \
+            xfce4-goodies \
+            firefox \
+            fonts-noto \
+            dbus-x11 \
+            pulseaudio
+          
+          # Configure XRDP
+          sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/allow_root=true/allow_root=false/g' /etc/xrdp/xrdp.ini
+          
+          # Create XRDP session file
+          sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
+#!/bin/sh
+if [ -r /etc/default/locale ]; then
+  . /etc/default/locale
+  export LANG LANGUAGE
+fi
+startxfce4
+EOF
+          
+          sudo chmod +x /etc/xrdp/startwm.sh
+          
+          # Set up .xsession for current user (root context)
+          echo 'xfce4-session' > ~/.xsession
+
+      - name: Configure and Start Services
+        run: |
+          echo "Configuring services..."
+          
+          # Enable and start xrdp
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+          
+          # Check xrdp status
+          sudo systemctl status xrdp --no-pager -l
+          
+          # Check if xrdp is listening
+          sudo netstat -tlnp | grep :3389 || echo "XRDP not listening on 3389"
+          
+          # Configure firewall (if ufw is available)
+          if command -v ufw >/dev/null 2>&1; then
+            sudo ufw allow 3389
+          fi
+
+      - name: Display Connection Information
+        run: |
+          echo ""
+          echo "🖥️  ========== RDP CONNECTION INFORMATION ========== 🖥️"
+          echo ""
+          echo "🔗 Tailscale Information:"
+          echo "   Hostname: $HOSTNAME"
+          echo "   IP Address: ${{ steps.tailscale-ip.outputs.ip }}"
+          echo ""
+          echo "👤 RDP Credentials:"
+          echo "   Username: zhameng"
+          echo "   Password: Fardan123@"
+          echo "   Port: 3389"
+          echo ""
+          echo "📋 Connection String:"
+          echo "   ${{ steps.tailscale-ip.outputs.ip }}:3389"
+          echo ""
+          echo "🔒 Security Note:"
+          echo "   This RDP session is only accessible via Tailscale VPN"
+          echo ""
+          echo "⏰ Session Lifetime:"
+          echo "   This RDP session will be available until this workflow completes"
+          echo ""
+          echo "======================================================"
+          echo ""
+          
+          # Display network information
+          echo "🌐 Network Status:"
+          sudo tailscale status
+          echo ""
+          ip addr show tailscale0 2>/dev/null || echo "Tailscale interface not found"
+
+      - name: Keep Alive
+        run: |
+          echo "RDP session is now active. This step will keep the workflow running."
+          echo "To connect, use the Tailscale IP above with RDP client."
+          echo "Workflow will timeout after 6 hours (GitHub limit)."
+          echo "Press Ctrl+C in the workflow log to terminate early."
+          
+          # Keep the workflow running for 6 hours (maximum)
+          sleep 21600
