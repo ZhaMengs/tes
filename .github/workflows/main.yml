@@ -134,15 +134,15 @@ jobs:
           sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
           sudo sed -i 's/allow_root=true/allow_root=false/g' /etc/xrdp/xrdp.ini
           
-          # Create XRDP session file
-          sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
+          # Create XRDP session file dengan cara yang lebih aman
+          sudo bash -c 'cat > /etc/xrdp/startwm.sh << "EOF"
 #!/bin/sh
 if [ -r /etc/default/locale ]; then
   . /etc/default/locale
   export LANG LANGUAGE
 fi
 startxfce4
-EOF
+EOF'
           
           sudo chmod +x /etc/xrdp/startwm.sh
           
