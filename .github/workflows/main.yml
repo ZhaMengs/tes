@@ -1,0 +1,54 @@
+name: RDP with Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscaled --state=mem:& &
+
+      - name: Auth Tailscale
+        run: |
+          # kasih kode nama komputer sesuai yg lu mau
+          HOSTNAME="zhameng(date +%s)"
+          echo "Using hostname: $HOSTNAME"
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$HOSTNAME
+
+      - name: Setup RDP User
+        run: |
+          # bikin user custom
+          USERNAME="zhameng"
+          PASSWORD="Fardan123@"
+          
+          sudo useradd -m $USERNAME
+          echo "$USERNAME:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo $USERNAME
+          
+          echo "User: $USERNAME"
+          echo "Password: $PASSWORD"
+
+      - name: Install XRDP & Desktop
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xrdp xfce4 xfce4-goodies
+          echo "xfce4-session" > ~/.xsession
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+      - name: Show Connection Info
+        run: |
+          echo "========== RDP Connection Info =========="
+          echo "Computer Name (Hostname): $(hostname)"
+          echo "Username: Zhameng"
+          echo "Password: Fardan123@"
+          echo "Tailscale IP: $(tailscale ip -4)"
+          echo "========================================"
