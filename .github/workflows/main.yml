@@ -14,41 +14,64 @@ jobs:
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscaled --state=mem:& &
+          sudo tailscaled --state=mem: &
+
+      - name: Wait for Tailscaled
+        run: |
+          sleep 5
+          sudo tailscale status
 
       - name: Auth Tailscale
         run: |
-          # kasih kode nama komputer sesuai yg lu mau
-          HOSTNAME="zhameng(date +%s)"
-          echo "Using hostname: $HOSTNAME"
+          HOSTNAME="zhameng-$(date +%s)"
+          echo "HOSTNAME=$HOSTNAME" >> $GITHUB_ENV
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$HOSTNAME
 
       - name: Setup RDP User
         run: |
-          # bikin user custom
           USERNAME="zhameng"
           PASSWORD="Fardan123@"
           
-          sudo useradd -m $USERNAME
-          echo "$USERNAME:$PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo $USERNAME
+          # Create user if not exists
+          if id "$USERNAME" &>/dev/null; then
+            echo "User $USERNAME already exists"
+          else
+            sudo useradd -m -s /bin/bash $USERNAME
+            echo "$USERNAME:$PASSWORD" | sudo chpasswd
+            sudo usermod -aG sudo $USERNAME
+          fi
           
-          echo "User: $USERNAME"
-          echo "Password: $PASSWORD"
+          # Set up X session for the user
+          sudo mkdir -p /home/$USERNAME/.config
+          echo "xfce4-session" | sudo tee /home/$USERNAME/.xsession
+          sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/.config
+          sudo chown $USERNAME:$USERNAME /home/$USERNAME/.xsession
 
       - name: Install XRDP & Desktop
         run: |
           sudo apt-get update
-          sudo apt-get install -y xrdp xfce4 xfce4-goodies
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xrdp xfce4 xfce4-goodies
+          
+          # Configure XRDP
+          sudo sed -i 's/port=3389/port=3390/g' /etc/xrdp/xrdp.ini
           echo "xfce4-session" > ~/.xsession
+          
+          # Restart xrdp service
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
+          
+          # Allow RDP port through firewall
+          sudo ufw allow 3389
+          sudo ufw allow 3390
 
       - name: Show Connection Info
         run: |
+          TAILSCALE_IP=$(tailscale ip -4)
           echo "========== RDP Connection Info =========="
           echo "Computer Name (Hostname): $(hostname)"
-          echo "Username: Zhameng"
+          echo "Tailscale Hostname: $HOSTNAME"
+          echo "Tailscale IP: $TAILSCALE_IP"
+          echo "Username: zhameng"
           echo "Password: Fardan123@"
-          echo "Tailscale IP: $(tailscale ip -4)"
+          echo "RDP Port: 3389 (or 3390 if changed)"
           echo "========================================"
